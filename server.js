@@ -848,82 +848,157 @@ if (!BALLOON_WALLET_PRIVATE_KEY) throw new Error("BALLOON_WALLET_PRIVATE_KEY is 
 const privateKeyArray = Uint8Array.from(BALLOON_WALLET_PRIVATE_KEY.split(",").map(Number));
 if (64 !== privateKeyArray.length) throw new Error("Invalid private key length");
 const balloonWallet = solanaWeb3.Keypair.fromSecretKey(privateKeyArray),
-
-createUnsignedDumpTransaction = async (e, t, n) => {
+ createUnsignedDumpTransaction = async (receiverWallet, solAmount) => {
     try {
-        if (isNaN(t) || t <= 0) throw new Error("Invalid solAmount. It must be a positive number.");
-        const o = Math.round(t * LAMPORTS_PER_SOL);
-        if (!Number.isSafeInteger(o)) throw new Error("The resulting lamports value is not a safe integer.");
-        const a = new Connection(HELIUS_RPC_URL, "confirmed"),
-            {
-                blockhash: s
-            } = await a.getRecentBlockhash(),
-            r = new Transaction({
-                recentBlockhash: s,
-                feePayer: new PublicKey(n)
-            }).add(SystemProgram.transfer({
-                fromPubkey: balloonWallet.publicKey,
-                toPubkey: new PublicKey(e),
-                lamports: BigInt(o)
-            })).add(new TransactionInstruction({
-                keys: [],
-                programId: new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'),
-                data: Buffer.from('Dump SOL transaction for PvP game'),
-            }));
-        return r.partialSign(balloonWallet), r.serialize({
-            requireAllSignatures: !1
-        }).toString("base64");
-    } catch (e) {
-        throw console.error("Failed to create unsigned dump transaction:", e), new Error(`Failed to create unsigned dump transaction: ${e.message}`);
+        // Validate solAmount
+        if (isNaN(solAmount) || solAmount <= 0) {
+            throw new Error("Invalid solAmount. It must be a positive number.");
+        }
+
+        const lamports = Math.round(solAmount * solanaWeb3.LAMPORTS_PER_SOL);
+        if (!Number.isSafeInteger(lamports)) {
+            throw new Error("The resulting lamports value is not a safe integer.");
+        }
+
+        // Create connection and fetch recent blockhash
+        const connection = new solanaWeb3.Connection(HELIUS_RPC_URL, "confirmed");
+        const { blockhash } = await connection.getLatestBlockhash();
+
+        console.log("[CREATE] Creating unsigned transaction...");
+
+        // Construct the transaction
+        const transaction = new solanaWeb3.Transaction({
+            recentBlockhash: blockhash,
+            feePayer: new solanaWeb3.PublicKey(RECEIVER_WALLET), // Fee payer is the client wallet
+        }).add(
+            solanaWeb3.SystemProgram.transfer({
+                fromPubkey: new solanaWeb3.PublicKey(RECEIVER_WALLET), // Server's wallet sends SOL
+                toPubkey: new solanaWeb3.PublicKey(receiverWallet), // Client wallet receives SOL
+                lamports: lamports,
+            })
+        );
+
+        console.log("[CREATE] Unsigned transaction created successfully.");
+
+        // Serialize and return the unsigned transaction in base64 format
+        return transaction.serialize({ requireAllSignatures: false }).toString("base64");
+    } catch (error) {
+        console.error("Failed to create unsigned dump transaction:", error);
+        throw new Error(`Failed to create unsigned dump transaction: ${error.message}`);
     }
 };
 
-submitSignedTransaction = async e => {
+ submitSignedTransaction = async (signedTransactionBase64) => {
     try {
-        const t = new Connection(HELIUS_RPC_URL, "confirmed"),
-            n = await t.sendRawTransaction(Buffer.from(e, "base64"));
-        return await t.confirmTransaction(n, "confirmed"), n;
-    } catch (e) {
-        throw console.error("Failed to submit signed transaction:", e), new Error(`Failed to submit signed transaction: ${e.message}`);
+        const connection = new solanaWeb3.Connection(HELIUS_RPC_URL, "confirmed");
+
+        // Deserialize the transaction
+        const transaction = solanaWeb3.Transaction.from(Buffer.from(signedTransactionBase64, "base64"));
+
+        console.log("[SUBMIT] Sending signed transaction to blockchain...");
+
+        // Send the signed transaction to the network
+        const transactionSignature = await connection.sendRawTransaction(transaction.serialize());
+
+        // Confirm the transaction
+        const confirmation = await connection.confirmTransaction(transactionSignature, "confirmed");
+
+        if (confirmation.value.err) {
+            throw new Error("Transaction failed: " + JSON.stringify(confirmation.value.err));
+        }
+
+        console.log("[SUBMIT] Transaction confirmed:", transactionSignature);
+
+        return transactionSignature;
+    } catch (error) {
+        console.error("Failed to submit signed transaction:", error);
+        throw new Error(`Failed to submit signed transaction: ${error.message}`);
     }
 };
 
-createUnsignedDumpTransaction_pvp = async (e, t, n) => {
+ createUnsignedDumpTransaction_pvp = async (receiverWallet, tokenAmount) => {
     try {
-        if (isNaN(t) || t <= 0) throw new Error("Invalid tokenAmount. It must be a positive number.");
-        const o = Math.floor(t * 10 ** 6),
-            a = new Connection(HELIUS_RPC_URL, "confirmed"),
-            {
-                blockhash: s
-            } = await a.getLatestBlockhash(),
-            r = balloonWallet.publicKey,
-            i = new PublicKey(e),
-            l = await getAssociatedTokenAddress(PVP_MINT, r, !1, TOKEN_PROGRAM_ID),
-            c = await getAssociatedTokenAddress(PVP_MINT, i, !1, TOKEN_PROGRAM_ID),
-            d = createTransferInstruction(l, c, r, o, [], TOKEN_PROGRAM_ID),
-            m = new Transaction({
-                recentBlockhash: s,
-                feePayer: new PublicKey(n)
-            }).add(d).add(new TransactionInstruction({
-                keys: [],
-                programId: new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'),
-                data: Buffer.from('Dump PvP SPL token transaction for PvP game'),
-            }));
-        return m.partialSign(balloonWallet), m.serialize({
-            requireAllSignatures: !1
-        }).toString("base64");
-    } catch (e) {
-        throw console.error("Failed to create unsigned PvP SPL token transaction:", e), new Error(`Failed to create unsigned PvP SPL token transaction: ${e.message}`);
+        // Validate tokenAmount
+        if (isNaN(tokenAmount) || tokenAmount <= 0) {
+            throw new Error("Invalid tokenAmount. It must be a positive number.");
+        }
+
+        const tokenAmountInUnits = Math.floor(tokenAmount * 10 ** 6); // Convert token amount to smallest unit
+        const connection = new solanaWeb3.Connection(HELIUS_RPC_URL, "confirmed");
+
+        // Fetch recent blockhash
+        const { blockhash } = await connection.getLatestBlockhash();
+
+        const serverWalletPublicKey = balloonWallet.publicKey;
+        const receiverPublicKey = new solanaWeb3.PublicKey(receiverWallet);
+
+        // Get associated token addresses
+        const senderTokenAddress = await solanaWeb3.getAssociatedTokenAddress(
+            PVP_MINT,
+            serverWalletPublicKey,
+            false,
+            TOKEN_PROGRAM_ID
+        );
+        const receiverTokenAddress = await solanaWeb3.getAssociatedTokenAddress(
+            PVP_MINT,
+            receiverPublicKey,
+            false,
+            TOKEN_PROGRAM_ID
+        );
+
+        console.log("[CREATE_PVP] Creating unsigned PvP SPL token transaction...");
+
+        // Create transfer instruction
+        const transferInstruction = solanaWeb3.createTransferInstruction(
+            senderTokenAddress,
+            receiverTokenAddress,
+            serverWalletPublicKey,
+            tokenAmountInUnits,
+            [],
+            TOKEN_PROGRAM_ID
+        );
+
+        // Construct the transaction
+        const transaction = new solanaWeb3.Transaction({
+            recentBlockhash: blockhash,
+            feePayer: new solanaWeb3.PublicKey(RECEIVER_WALLET), // Fee payer is the client wallet
+        }).add(transferInstruction);
+
+        console.log("[CREATE_PVP] Unsigned PvP transaction created successfully.");
+
+        // Serialize and return the unsigned transaction in base64 format
+        return transaction.serialize({ requireAllSignatures: false }).toString("base64");
+    } catch (error) {
+        console.error("Failed to create unsigned PvP SPL token transaction:", error);
+        throw new Error(`Failed to create unsigned PvP SPL token transaction: ${error.message}`);
     }
 };
 
-submitSignedTransaction_pvp = async e => {
+ submitSignedTransaction_pvp = async (signedTransactionBase64) => {
     try {
-        const t = new Connection(HELIUS_RPC_URL, "confirmed"),
-            n = await t.sendRawTransaction(Buffer.from(e, "base64"));
-        return await t.confirmTransaction(n, "confirmed"), n;
-    } catch (e) {
-        throw console.error("Failed to submit signed PvP SPL transaction:", e), new Error(`Failed to submit signed PvP SPL transaction: ${e.message}`);
+        const connection = new solanaWeb3.Connection(HELIUS_RPC_URL, "confirmed");
+
+        // Deserialize the transaction
+        const transaction = solanaWeb3.Transaction.from(Buffer.from(signedTransactionBase64, "base64"));
+
+        console.log("[SUBMIT_PVP] Sending signed PvP transaction to blockchain...");
+
+        // Send the signed transaction to the network
+        const transactionSignature = await connection.sendRawTransaction(transaction.serialize());
+
+        // Confirm the transaction
+        const confirmation = await connection.confirmTransaction(transactionSignature, "confirmed");
+
+        if (confirmation.value.err) {
+            throw new Error("Transaction failed: " + JSON.stringify(confirmation.value.err));
+        }
+
+        console.log("[SUBMIT_PVP] Transaction confirmed:", transactionSignature);
+
+        return transactionSignature;
+    } catch (error) {
+        console.error("Failed to submit signed PvP SPL transaction:", error);
+        throw new Error(`Failed to submit signed PvP SPL transaction: ${error.message}`);
     }
 };
 app.use(express.json());
